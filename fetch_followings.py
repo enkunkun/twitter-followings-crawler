@@ -36,6 +36,7 @@ def iso_now():
 
 # ==========================================
 # Nitter servers
+# see: https://github.com/zedeus/nitter/wiki/Instances
 # ==========================================
 NITTERS = [
     "https://nitter.tiekoetter.com",

@@ -92,8 +92,6 @@ data/following.js
 mkdir -p logs images output
 ```
 
----
-
 ## 使用方法（コマンド一覧）
 
 ### 🔹 1. 通常モード
@@ -103,8 +101,6 @@ uv run fetch_followings.py
 ```
 
 - success.jsonl に無いユーザーだけ処理
-
----
 
 ### 🔹 2. 再開モード（resume）
 
