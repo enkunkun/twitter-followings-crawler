@@ -1,0 +1,16 @@
+[project]
+name = "twitter-followings-crawler"
+version = "0.1.0"
+description = "Twitter followings crawler using Nitter"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "bs4>=0.0.2",
+    "colorama>=0.4.6",
+    "lxml>=6.0.2",
+    "requests>=2.32.5",
+    "tqdm>=4.67.1",
+]
+
+[project.scripts]
+followings-crawl = "fetch_followings:main"
