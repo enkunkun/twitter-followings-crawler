@@ -137,6 +137,31 @@ uv run fetch_followings.py --export-only
 
 - success.jsonl から cosense_followings.json を再生成
 
+### 🔹 6. 差分チェック（validate）
+
+```bash
+uv run fetch_followings.py --validate
+```
+
+- `data/following.js` と `logs/success.jsonl` の件数差を表示し、`success.jsonl` に存在しないアカウント ID の一覧を出力します（読み取り専用）。
+
+### 🔹 7. 画像欠落チェック（validate-images）
+
+```bash
+uv run fetch_followings.py --validate-images
+```
+
+- `success.jsonl` を解析して、プロフィール画像が欠落している（空、または不正な URL パターン）アカウントの一覧を表示します。`success.jsonl` は変更しません（読み取り専用）。
+
+### 🔹 8. 画像欠落ユーザーのみ再取得（fetch-missing-images）
+
+```bash
+uv run fetch_followings.py --fetch-missing-images
+```
+
+- `success.jsonl` 上の画像欠落アカウントのみを Nitter から再取得して、プロフィール画像／バナーをダウンロードします。
+- 取得に成功したエントリは `success.jsonl` に追記し、既存の `success_map` を更新します。Nitter への負荷低減のために遅延が入り、中断しても安全に再開できます。
+
 ## 出力ファイル
 
 ```text
