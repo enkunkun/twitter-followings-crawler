@@ -61,15 +61,29 @@ def pbs_filename(pbs_url):
     return name
 
 def nitter_to_pbs(url):
+    """
+    Nitter の /pic/ URL を元の Twitter 画像 URL に戻す。
+    - /pic/ の後ろが空: アバター未設定・凍結 → None
+    - abs.twimg.com/... の場合: そのまま abs ドメインで返す（初期アバター対応）
+    - それ以外: pbs.twimg.com/... として返す
+    """
     if not url or "/pic/" not in url:
         return None
 
     path = url.split("/pic/", 1)[1]
+    if not path:
+        # "/pic/" のみ → 凍結などで画像なし
+        return None
+
     decoded = unquote(path)
     decoded = cleanup_url(decoded)
 
-    # すでに pbs<prefix> なら追加しない
+    # すでに pbs なら追加しない
     if decoded.startswith("pbs.twimg.com/"):
+        return "https://" + decoded
+
+    # 初期アバター (abs.twimg.com) は abs のまま扱う
+    if decoded.startswith("abs.twimg.com/"):
         return "https://" + decoded
 
     return "https://pbs.twimg.com/" + decoded
@@ -88,6 +102,11 @@ def fix_pbs_url(url):
     #   https://pbs.twimg.com/pbs.twimg.com/XXXX
     if "pbs.twimg.com/pbs.twimg.com/" in url:
         url = url.replace("pbs.twimg.com/pbs.twimg.com/", "pbs.twimg.com/")
+
+    # pbs + abs 対策:
+    #   https://pbs.twimg.com/abs.twimg.com/sticky/default_profile_images/...
+    if "https://pbs.twimg.com/abs.twimg.com/" in url:
+        url = url.replace("https://pbs.twimg.com/abs.twimg.com/", "https://abs.twimg.com/")
 
     # decode された結果が pbs.* で始まる時
     if url.startswith("pbs.twimg.com/"):
@@ -174,15 +193,34 @@ def parse_profile(html, base_url, acc):
     )
 
     avatar_n = None
+    avatar_unset = False
     if avatar and avatar.get("src"):
         src = avatar["src"]
+
+        # /pic/ 単体 → 画像未設定（凍結など）
+        if src == "/pic/" or src.endswith("/pic/"):
+            avatar_unset = True
+
         avatar_n = src if src.startswith("http") else base_url + src
 
-    banner = soup.select_one("div.profile-banner img")
+    # Banner: デフォルト色のみ (背景色 #1DA1F2) は「未設定」とみなす
+    banner_unset = False
     banner_n = None
-    if banner and banner.get("src"):
-        src = banner["src"]
-        banner_n = src if src.startswith("http") else base_url + src
+
+    banner_div = soup.select_one("div.profile-banner")
+    banner_img = None
+    if banner_div:
+        banner_img = banner_div.select_one("img")
+        if banner_img and banner_img.get("src"):
+            src = banner_img["src"]
+            banner_n = src if src.startswith("http") else base_url + src
+        else:
+            # <div class="profile-banner"><a style="background-color: #1DA1F2;"></a></div>
+            a = banner_div.select_one("a")
+            if a:
+                style = a.get("style", "")
+                if "#1DA1F2" in style:
+                    banner_unset = True
 
     return {
         "account_id": acc,
@@ -197,6 +235,9 @@ def parse_profile(html, base_url, acc):
         "profile_banner": nitter_to_pbs(banner_n),
         "fetched_from": base_url,
         "fetched_at": iso_now(),
+        # 未設定判定フラグ
+        "avatar_unset": avatar_unset,
+        "banner_unset": banner_unset,
     }
 
 # ==========================================
@@ -270,7 +311,7 @@ def export_cosense_single(results):
         lines.append(f"Last Updated: {u.get('fetched_at', '<unknown>')}")
         lines.append(f"Fetched From: {u.get('fetched_from', '<unknown>')}")
         lines.append("")
-        #lines.append("#twitter #followings")
+        # lines.append("#twitter #followings")
 
         pages.append({"title": f"@{sn}", "lines": lines})
 
@@ -280,6 +321,41 @@ def export_cosense_single(results):
     )
 
 # ==========================================
+# 画像欠落ユーザー検出（プロフィール画像のみ）
+# ==========================================
+def find_accounts_needing_profile_images(success_map):
+    """
+    success_map から、プロフィール画像の再取得が必要なアカウント ID のリストを返す。
+    - profile_pic が空 / None
+    - URL が明らかにおかしい (pbs + https/pbs + abs など)
+    - avatar_unset=True のものは「未設定」としてスキップ
+    """
+    missing = []
+    for acc, info in success_map.items():
+        avatar_unset = info.get("avatar_unset", False)
+        if avatar_unset:
+            # 凍結などでアバター未設定 → ここでは OK 扱い
+            continue
+
+        pic = info.get("profile_pic")
+
+        # 完全に無い
+        if pic is None or pic == "":
+            missing.append(acc)
+            continue
+
+        # おかしな URL パターン
+        if (
+            "pbs.twimg.com/https://pbs.twimg.com/" in pic
+            or "pbs.twimg.com/pbs.twimg.com/" in pic
+            or "pbs.twimg.com/abs.twimg.com/" in pic
+        ):
+            missing.append(acc)
+            continue
+
+    return missing
+
+# ==========================================
 # Main
 # ==========================================
 def main():
@@ -287,15 +363,93 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--single", action="store_true")
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--export-only", action="store_true")   # ★追加
+    parser.add_argument("--export-only", action="store_true")
+    parser.add_argument("--validate", action="store_true")           # followings.js vs success.jsonl
+    parser.add_argument("--validate-images", action="store_true")    # 画像欠落チェック（読み取り専用）
+    parser.add_argument("--fetch-missing-images", action="store_true")  # 画像欠落ユーザーのみ再取得
     args = parser.parse_args()
 
     ids = load_followings("data/following.js")
     success_map = load_success_map()
+
+    # EXPORT ONLY
     if args.export_only:
         tqdm.write(Fore.CYAN + "[EXPORT] Cosense output only" + Style.RESET_ALL)
         export_cosense_single(success_map)
         return
+
+    # ==========================================
+    # --validate : followings.js と success.jsonl の差分
+    # ==========================================
+    if args.validate:
+        print("[VALIDATE] followings.js:", len(ids), "users")
+        print("[VALIDATE] success.jsonl:", len(success_map), "users")
+
+        missing_ids = [i for i in ids if i not in success_map]
+        print("[VALIDATE] Missing", len(missing_ids), "users in success.jsonl:")
+
+        for m in missing_ids:
+            print(" ", m)
+
+        return
+
+    # ==========================================
+    # --validate-images : 画像欠落ユーザーの一覧を表示（success.jsonl は変更しない）
+    # ==========================================
+    if args.validate_images:
+        print(f"[VALIDATE-IMAGES] success.jsonl: {len(success_map)} users")
+        missing = find_accounts_needing_profile_images(success_map)
+        print(f"[VALIDATE-IMAGES] accounts with missing images: {len(missing)}")
+        for acc in missing:
+            print(" ", acc)
+        return
+
+    # ==========================================
+    # --fetch-missing-images : 画像欠落ユーザーのみを再取得して success.jsonl を更新
+    # ==========================================
+    if args.fetch_missing_images:
+        print(f"Loaded {len(success_map)} previous entries")
+        missing = find_accounts_needing_profile_images(success_map)
+        print(f"[VALIDATE-IMAGES] success.jsonl: {len(success_map)} users")
+        print(f"[VALIDATE-IMAGES] accounts with missing images: {len(missing)}")
+
+        if not missing:
+            print("[FETCH-MISSING-IMAGES] No accounts need re-fetch.")
+            return
+
+        pbar = tqdm(missing, desc="[FETCH-MISSING-IMAGES]", unit="user")
+        for acc in pbar:
+            if INTERRUPTED:
+                tqdm.write(Fore.YELLOW + "[STOP] Interrupted safely." + Style.RESET_ALL)
+                break
+
+            info = fetch_from_nitter(acc)
+            if info:
+                # 新しい情報で success_map を更新
+                ensure_image_new(acc, "profile", info["profile_pic"], info["profile_pic_nitter"], success_map)
+                ensure_image_new(acc, "banner", info["profile_banner"], info["profile_banner_nitter"], success_map)
+
+                success_map[acc] = info
+                append_success(info)
+
+                tqdm.write(
+                    Fore.GREEN +
+                    f"[FETCH-MISSING-IMAGES] ✔ {acc} @{info.get('screen_name')} (from {info['fetched_from']})" +
+                    Style.RESET_ALL
+                )
+            else:
+                tqdm.write(
+                    Fore.RED +
+                    f"[FETCH-MISSING-IMAGES] ✘ {acc} (all Nitter failed)" +
+                    Style.RESET_ALL
+                )
+
+            # 少しだけスリープ（Nitter への負荷を抑える）
+            time.sleep(random.uniform(0.7, 1.5))
+
+        IMAGE_POOL.shutdown(wait=True)
+        return
+
     tqdm.write(f"Loaded {len(success_map)} previous entries")
 
     # Determine target
